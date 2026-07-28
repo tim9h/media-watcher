@@ -1,6 +1,17 @@
+using System.Reflection;
 using MediaWatcher;
 
-Console.OutputEncoding = System.Text.Encoding.UTF8;
+if (args.Contains("--version"))
+{
+    var version = Assembly
+        .GetExecutingAssembly()
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+        ?.InformationalVersion
+        ?? "unknown";
+
+    Console.WriteLine($"MediaWatcher {version}");
+    return;
+}
 
 var watcher = new MediaSessionWatcher();
 
