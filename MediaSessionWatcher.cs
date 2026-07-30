@@ -1,11 +1,14 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Windows.Media.Control;
 
 namespace MediaWatcher;
 
-public class MediaSessionWatcher
+public sealed class MediaSessionWatcher
 {
+    private readonly JsonLineWriter output;
+    private readonly bool debugEnabled;
+
+    private readonly object sessionLock = new();
+
     private GlobalSystemMediaTransportControlsSessionManager? manager;
     private GlobalSystemMediaTransportControlsSession? currentSession;
 
@@ -14,28 +17,41 @@ public class MediaSessionWatcher
     private string? lastAlbum;
     private string? lastPlaybackState;
 
-    private readonly JsonSerializerOptions jsonOptions = new()
+    public MediaSessionWatcher(JsonLineWriter output, bool debugEnabled = false)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+        this.output = output;
+        this.debugEnabled = debugEnabled;
+    }
+
+    public GlobalSystemMediaTransportControlsSession? CurrentSession
+    {
+        get
+        {
+            lock (sessionLock)
+            {
+                return currentSession;
+            }
+        }
+    }
 
     public async Task StartAsync()
     {
         manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+
         manager.CurrentSessionChanged += OnCurrentSessionChanged;
 
         var session = manager.GetCurrentSession();
 
-        if (session != null)
+        if (session == null)
         {
-            AttachSession(session);
-
-            await PublishMedia(session);
-
-            // Prevent the initial playbackChanged event from being emitted.
-            lastPlaybackState = session.GetPlaybackInfo().PlaybackStatus.ToString();
+            DebugLog("No current media session available at startup.");
+            return;
         }
+
+        AttachSession(session);
+        await PublishMedia(session);
+
+        lastPlaybackState = session.GetPlaybackInfo().PlaybackStatus.ToString();
     }
 
     private void OnCurrentSessionChanged(
@@ -46,25 +62,56 @@ public class MediaSessionWatcher
         var session = sender.GetCurrentSession();
 
         if (session == null)
+        {
+            DetachCurrentSession();
+            ResetCachedState();
+
+            DebugLog("The current media session was removed.");
             return;
+        }
 
         AttachSession(session);
-
         _ = PublishMedia(session);
     }
 
     private void AttachSession(GlobalSystemMediaTransportControlsSession session)
     {
-        if (currentSession != null)
+        DetachCurrentSession();
+        ResetCachedState();
+
+        lock (sessionLock)
         {
-            currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
-            currentSession.PlaybackInfoChanged -= OnPlaybackInfoChanged;
+            currentSession = session;
+
+            currentSession.MediaPropertiesChanged += OnMediaPropertiesChanged;
+
+            currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
         }
 
-        currentSession = session;
+        DebugLog($"Attached session " + $"'{EscapeForLog(session.SourceAppUserModelId)}'.");
+    }
 
-        currentSession.MediaPropertiesChanged += OnMediaPropertiesChanged;
-        currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
+    private void DetachCurrentSession()
+    {
+        lock (sessionLock)
+        {
+            if (currentSession == null)
+                return;
+
+            currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
+
+            currentSession.PlaybackInfoChanged -= OnPlaybackInfoChanged;
+
+            currentSession = null;
+        }
+    }
+
+    private void ResetCachedState()
+    {
+        lastTitle = null;
+        lastArtist = null;
+        lastAlbum = null;
+        lastPlaybackState = null;
     }
 
     private void OnMediaPropertiesChanged(
@@ -85,76 +132,132 @@ public class MediaSessionWatcher
 
     private async Task PublishMedia(GlobalSystemMediaTransportControlsSession session)
     {
-        var media = await session.TryGetMediaPropertiesAsync();
-
-        var title = CleanText(media.Title);
-        var artist = CleanText(media.Artist);
-        var album = CleanText(media.AlbumTitle);
-
-        if (string.IsNullOrWhiteSpace(title))
-            return;
-
-        if (title == lastTitle && artist == lastArtist && album == lastAlbum)
+        try
         {
-            return;
-        }
+            var media = await session.TryGetMediaPropertiesAsync();
 
-        lastTitle = title;
-        lastArtist = artist;
-        lastAlbum = album;
-
-        var playback = session.GetPlaybackInfo();
-        var timeline = session.GetTimelineProperties();
-
-        var state = playback.PlaybackStatus.ToString();
-
-        lastPlaybackState = state;
-
-        Write(
-            new MediaEvent
+            // Ignore an async response from a session that is no longer
+            // the active session.
+            if (!ReferenceEquals(session, CurrentSession))
             {
-                Event = "mediaChanged",
-                Player = NormalizePlayer(session.SourceAppUserModelId),
-                Title = title,
-                Artist = artist,
-                Album = album,
-                State = state,
-                Position = (long)timeline.Position.TotalMilliseconds,
-                Duration = (long)timeline.EndTime.TotalMilliseconds,
+                DebugLog("Ignoring metadata from an inactive session.");
+
+                return;
             }
-        );
+
+            var title = CleanText(media.Title);
+            var artist = CleanText(media.Artist);
+            var album = CleanText(media.AlbumTitle);
+
+            DebugLog(
+                $"raw metadata: title='{EscapeForLog(media.Title)}' "
+                    + $"artist='{EscapeForLog(media.Artist)}' "
+                    + $"album='{EscapeForLog(media.AlbumTitle)}' "
+                    + $"source='{EscapeForLog(session.SourceAppUserModelId)}'"
+            );
+
+            DebugLog(
+                $"normalized metadata: title='{EscapeForLog(title)}' "
+                    + $"artist='{EscapeForLog(artist)}' "
+                    + $"album='{EscapeForLog(album)}'"
+            );
+
+            if (string.IsNullOrWhiteSpace(title))
+                return;
+
+            if (title == lastTitle && artist == lastArtist && album == lastAlbum)
+            {
+                return;
+            }
+
+            lastTitle = title;
+            lastArtist = artist;
+            lastAlbum = album;
+
+            var playback = session.GetPlaybackInfo();
+            var timeline = session.GetTimelineProperties();
+
+            var state = playback.PlaybackStatus.ToString();
+
+            lastPlaybackState = state;
+
+            output.Write(
+                new MediaEvent
+                {
+                    Event = "mediaChanged",
+                    Player = NormalizePlayer(session.SourceAppUserModelId),
+                    Title = title,
+                    Artist = artist,
+                    Album = album,
+                    State = state,
+                    Position = (long)timeline.Position.TotalMilliseconds,
+                    Duration = (long)timeline.EndTime.TotalMilliseconds,
+                }
+            );
+        }
+        catch (Exception exception)
+        {
+            DebugLog(
+                $"Publishing media failed: " + $"{exception.GetType().Name}: {exception.Message}"
+            );
+        }
     }
 
     private void PublishPlayback(GlobalSystemMediaTransportControlsSession session)
     {
-        var playback = session.GetPlaybackInfo();
-        var state = playback.PlaybackStatus.ToString();
+        try
+        {
+            if (!ReferenceEquals(session, CurrentSession))
+                return;
 
-        if (state == "Closed")
-            return;
+            var playback = session.GetPlaybackInfo();
+            var state = playback.PlaybackStatus.ToString();
 
-        if (state == lastPlaybackState)
-            return;
+            if (state == "Closed")
+                return;
 
-        lastPlaybackState = state;
+            if (state == lastPlaybackState)
+                return;
 
-        var timeline = session.GetTimelineProperties();
+            lastPlaybackState = state;
 
-        Write(
-            new MediaEvent
-            {
-                Event = "playbackChanged",
-                State = state,
-                Position = (long)timeline.Position.TotalMilliseconds,
-                Duration = (long)timeline.EndTime.TotalMilliseconds,
-            }
-        );
+            var timeline = session.GetTimelineProperties();
+
+            output.Write(
+                new MediaEvent
+                {
+                    Event = "playbackChanged",
+                    State = state,
+                    Position = (long)timeline.Position.TotalMilliseconds,
+                    Duration = (long)timeline.EndTime.TotalMilliseconds,
+                }
+            );
+        }
+        catch (Exception exception)
+        {
+            DebugLog(
+                $"Publishing playback state failed: "
+                    + $"{exception.GetType().Name}: {exception.Message}"
+            );
+        }
     }
 
-    private void Write(MediaEvent e)
+    private void DebugLog(string message)
     {
-        Console.WriteLine(JsonSerializer.Serialize(e, jsonOptions));
-        Console.Out.Flush();
+        if (!debugEnabled)
+            return;
+
+        Console.Error.WriteLine($"[MediaWatcher][session][debug] {message}");
+
+        Console.Error.Flush();
+    }
+
+    private static string EscapeForLog(string? value)
+    {
+        if (value is null)
+            return "<null>";
+
+        return value.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
     }
 
     private static string CleanText(string? value)
@@ -176,11 +279,14 @@ public class MediaSessionWatcher
         player = player.Trim();
 
         if (player.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
             player = player[..^4];
+        }
 
-        // Windows Store apps often report "...SpotifyMusic..."
         if (player.Contains("Spotify", StringComparison.OrdinalIgnoreCase))
+        {
             return "Spotify";
+        }
 
         return player;
     }

@@ -1,20 +1,28 @@
 using System.Reflection;
 using MediaWatcher;
 
-if (args.Contains("--version"))
+if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
 {
-    var version = Assembly
-        .GetExecutingAssembly()
-        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-        ?.InformationalVersion
+    var version =
+        Assembly
+            .GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
         ?? "unknown";
 
     Console.WriteLine($"MediaWatcher {version}");
     return;
 }
 
-var watcher = new MediaSessionWatcher();
+var debugEnabled = args.Contains("--debug", StringComparer.OrdinalIgnoreCase);
 
-await watcher.StartAsync();
+var output = new JsonLineWriter();
 
-await Task.Delay(Timeout.Infinite);
+var mediaSessionWatcher = new MediaSessionWatcher(output, debugEnabled);
+
+await mediaSessionWatcher.StartAsync();
+
+var mediaCommandWatcher = new MediaCommandWatcher(mediaSessionWatcher, output, debugEnabled);
+
+// Keeps the process alive until Java closes stdin.
+await mediaCommandWatcher.RunAsync();
