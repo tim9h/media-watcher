@@ -1,8 +1,6 @@
-namespace MediaWatcher;
+namespace MediaWatcher.Commands;
 
 public sealed class MediaCommand
 {
-    public string? Id { get; init; }
-
     public string? Command { get; init; }
 }

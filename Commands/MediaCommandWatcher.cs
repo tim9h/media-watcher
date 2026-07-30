@@ -1,36 +1,57 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using Windows.Media.Control;
+using MediaWatcher.Audio;
+using MediaWatcher.IO;
+using MediaWatcher.Session;
 
-namespace MediaWatcher;
+namespace MediaWatcher.Commands;
 
 public sealed class MediaCommandWatcher
 {
-    private readonly MediaSessionWatcher mediaSessionWatcher;
+    private readonly AudioController audioController;
     private readonly JsonLineWriter output;
     private readonly bool debugEnabled;
+
+    private readonly Dictionary<string, Func<Task<bool>>> handlers;
 
     private readonly JsonSerializerOptions jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
-        AllowTrailingCommas = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
     };
 
     public MediaCommandWatcher(
         MediaSessionWatcher mediaSessionWatcher,
+        AudioController audioController,
         JsonLineWriter output,
         bool debugEnabled = false
     )
     {
-        this.mediaSessionWatcher = mediaSessionWatcher;
+        this.audioController = audioController;
         this.output = output;
         this.debugEnabled = debugEnabled;
+
+        handlers = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // GSMTC
+            ["play"] = mediaSessionWatcher.PlayAsync,
+            ["pause"] = mediaSessionWatcher.PauseAsync,
+            ["toggleplaypause"] = mediaSessionWatcher.TogglePlayPauseAsync,
+            ["next"] = mediaSessionWatcher.NextAsync,
+            ["previous"] = mediaSessionWatcher.PreviousAsync,
+            ["prev"] = mediaSessionWatcher.PreviousAsync,
+            ["stop"] = mediaSessionWatcher.StopAsync,
+
+            // Core Audio
+            ["mute"] = audioController.MuteAsync,
+            ["unmute"] = audioController.UnmuteAsync,
+            ["togglemute"] = audioController.ToggleMuteAsync,
+            ["vol+"] = audioController.VolumeUpAsync,
+            ["vol-"] = audioController.VolumeDownAsync,
+        };
     }
 
     public async Task RunAsync()
     {
-        DebugLog("Command listener started.");
+        Debug("Command listener started.");
 
         while (true)
         {
@@ -40,19 +61,15 @@ public sealed class MediaCommandWatcher
             {
                 line = await Console.In.ReadLineAsync();
             }
-            catch (Exception exception)
+            catch (Exception ex)
             {
-                DebugLog(
-                    $"Reading stdin failed: " + $"{exception.GetType().Name}: {exception.Message}"
-                );
-
+                Debug($"stdin error: {ex.Message}");
                 return;
             }
 
-            // Java closed the helper's stdin.
             if (line == null)
             {
-                DebugLog("stdin was closed. Command listener is stopping.");
+                Debug("stdin closed.");
                 return;
             }
 
@@ -71,94 +88,41 @@ public sealed class MediaCommandWatcher
         {
             command = JsonSerializer.Deserialize<MediaCommand>(line, jsonOptions);
         }
-        catch (JsonException exception)
+        catch
         {
-            DebugLog($"Invalid command JSON: '{EscapeForLog(line)}'; " + exception.Message);
-            WriteResult(id: null, command: "", success: false, error: "invalidJson");
+            WriteResult("", false, "invalidJson");
             return;
         }
 
-        var commandName = command?.Command?.Trim();
-
-        if (string.IsNullOrWhiteSpace(commandName))
+        if (command == null || string.IsNullOrWhiteSpace(command.Command))
         {
-            WriteResult(id: command?.Id, command: "", success: false, error: "missingCommand");
+            WriteResult("", false, "missingCommand");
             return;
         }
 
-        DebugLog(
-            $"Received command '{EscapeForLog(commandName)}' "
-                + $"with id '{EscapeForLog(command?.Id)}'."
-        );
-
-        await ExecuteAsync(command!.Id, commandName);
-    }
-
-    private async Task ExecuteAsync(string? id, string command)
-    {
-        // Capture the reference once. The active session may switch while
-        // the asynchronous GSMTC command is running.
-        GlobalSystemMediaTransportControlsSession? session = mediaSessionWatcher.CurrentSession;
-
-        if (session == null)
+        if (!handlers.TryGetValue(command.Command, out var handler))
         {
-            WriteResult(id, command, success: false, error: "noActiveSession");
+            WriteResult(command.Command, false, "unknownCommand");
             return;
         }
 
         try
         {
-            bool success;
-            switch (command.ToLowerInvariant())
-            {
-                case "play":
-                    success = await session.TryPlayAsync();
-                    break;
-
-                case "pause":
-                    success = await session.TryPauseAsync();
-                    break;
-
-                case "toggleplaypause":
-                    success = await session.TryTogglePlayPauseAsync();
-                    break;
-
-                case "next":
-                    success = await session.TrySkipNextAsync();
-                    break;
-
-                case "previous":
-                case "prev":
-                    success = await session.TrySkipPreviousAsync();
-                    break;
-
-                case "stop":
-                    success = await session.TryStopAsync();
-                    break;
-
-                default:
-                    WriteResult(id, command, success: false, error: "unknownCommand");
-                    return;
-            }
-            WriteResult(id, command, success, success ? null : "commandRejected");
+            bool success = await handler();
+            WriteResult(command.Command, success, success ? null : "commandRejected");
         }
-        catch (Exception exception)
+        catch (Exception ex)
         {
-            DebugLog(
-                $"Command '{EscapeForLog(command)}' failed: "
-                    + $"{exception.GetType().Name}: {exception.Message}"
-            );
-
-            WriteResult(id, command, success: false, error: "commandFailed");
+            Debug(ex.ToString());
+            WriteResult(command.Command, false, "commandFailed");
         }
     }
 
-    private void WriteResult(string? id, string command, bool success, string? error)
+    private void WriteResult(string command, bool success, string? error)
     {
         output.Write(
             new CommandResultEvent
             {
-                Id = id,
                 Command = command,
                 Success = success,
                 Error = error,
@@ -166,20 +130,12 @@ public sealed class MediaCommandWatcher
         );
     }
 
-    private void DebugLog(string message)
+    private void Debug(string message)
     {
         if (!debugEnabled)
             return;
 
-        Console.Error.WriteLine($"[MediaWatcher][command][debug] {message}");
+        Console.Error.WriteLine($"[MediaWatcher][command] {message}");
         Console.Error.Flush();
-    }
-
-    private static string EscapeForLog(string? value)
-    {
-        if (value is null)
-            return "<null>";
-
-        return value.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
     }
 }

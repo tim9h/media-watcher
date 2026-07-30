@@ -1,13 +1,14 @@
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Windows;
+using MediaWatcher.IO;
 using Windows.Media.Control;
 
-namespace MediaWatcher;
+namespace MediaWatcher.Session;
 
 public sealed class MediaSessionWatcher
 {
     private readonly JsonLineWriter output;
     private readonly bool debugEnabled;
-
-    private readonly object sessionLock = new();
 
     private GlobalSystemMediaTransportControlsSessionManager? manager;
     private GlobalSystemMediaTransportControlsSession? currentSession;
@@ -23,36 +24,68 @@ public sealed class MediaSessionWatcher
         this.debugEnabled = debugEnabled;
     }
 
-    public GlobalSystemMediaTransportControlsSession? CurrentSession
-    {
-        get
-        {
-            lock (sessionLock)
-            {
-                return currentSession;
-            }
-        }
-    }
-
     public async Task StartAsync()
     {
         manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-
         manager.CurrentSessionChanged += OnCurrentSessionChanged;
 
         var session = manager.GetCurrentSession();
-
         if (session == null)
         {
-            DebugLog("No current media session available at startup.");
+            Debug("No active media session.");
             return;
         }
 
         AttachSession(session);
         await PublishMedia(session);
 
+        // Avoid emitting the initial playback state
         lastPlaybackState = session.GetPlaybackInfo().PlaybackStatus.ToString();
     }
+
+    // ============================================================
+    // GSMTC commands
+    // ============================================================
+
+    public Task<bool> PlayAsync() => ExecuteAsync(static s => s.TryPlayAsync().AsTask());
+
+    public Task<bool> PauseAsync() => ExecuteAsync(static s => s.TryPauseAsync().AsTask());
+
+    public Task<bool> TogglePlayPauseAsync() =>
+        ExecuteAsync(static s => s.TryTogglePlayPauseAsync().AsTask());
+
+    public Task<bool> NextAsync() => ExecuteAsync(static s => s.TrySkipNextAsync().AsTask());
+
+    public Task<bool> PreviousAsync() =>
+        ExecuteAsync(static s => s.TrySkipPreviousAsync().AsTask());
+
+    public Task<bool> StopAsync() => ExecuteAsync(static s => s.TryStopAsync().AsTask());
+
+    private async Task<bool> ExecuteAsync(
+        Func<GlobalSystemMediaTransportControlsSession, Task<bool>> action
+    )
+    {
+        var session = currentSession;
+        if (session == null)
+        {
+            Debug("Command rejected: no active session.");
+            return false;
+        }
+
+        try
+        {
+            return await action(session);
+        }
+        catch (Exception ex)
+        {
+            Debug($"GSMTC command failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    // ============================================================
+    // Session handling
+    // ============================================================
 
     private void OnCurrentSessionChanged(
         GlobalSystemMediaTransportControlsSessionManager sender,
@@ -60,13 +93,11 @@ public sealed class MediaSessionWatcher
     )
     {
         var session = sender.GetCurrentSession();
-
         if (session == null)
         {
-            DetachCurrentSession();
-            ResetCachedState();
-
-            DebugLog("The current media session was removed.");
+            DetachSession();
+            ResetCache();
+            Debug("Current session removed.");
             return;
         }
 
@@ -76,43 +107,32 @@ public sealed class MediaSessionWatcher
 
     private void AttachSession(GlobalSystemMediaTransportControlsSession session)
     {
-        DetachCurrentSession();
-        ResetCachedState();
-
-        lock (sessionLock)
-        {
-            currentSession = session;
-
-            currentSession.MediaPropertiesChanged += OnMediaPropertiesChanged;
-
-            currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
-        }
-
-        DebugLog($"Attached session " + $"'{EscapeForLog(session.SourceAppUserModelId)}'.");
+        DetachSession();
+        ResetCache();
+        currentSession = session;
+        session.MediaPropertiesChanged += OnMediaPropertiesChanged;
+        session.PlaybackInfoChanged += OnPlaybackInfoChanged;
+        Debug($"Attached session: " + $"{Escape(session.SourceAppUserModelId)}");
     }
 
-    private void DetachCurrentSession()
+    private void DetachSession()
     {
-        lock (sessionLock)
-        {
-            if (currentSession == null)
-                return;
+        if (currentSession == null)
+            return;
 
-            currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
-
-            currentSession.PlaybackInfoChanged -= OnPlaybackInfoChanged;
-
-            currentSession = null;
-        }
+        currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
+        currentSession.PlaybackInfoChanged -= OnPlaybackInfoChanged;
+        currentSession = null;
     }
 
-    private void ResetCachedState()
+    private void ResetCache()
     {
-        lastTitle = null;
-        lastArtist = null;
-        lastAlbum = null;
-        lastPlaybackState = null;
+        (lastTitle, lastArtist, lastAlbum, lastPlaybackState) = (null, null, null, null);
     }
+
+    // ============================================================
+    // GSMTC events
+    // ============================================================
 
     private void OnMediaPropertiesChanged(
         GlobalSystemMediaTransportControlsSession sender,
@@ -132,139 +152,104 @@ public sealed class MediaSessionWatcher
 
     private async Task PublishMedia(GlobalSystemMediaTransportControlsSession session)
     {
-        try
+        var media = await session.TryGetMediaPropertiesAsync();
+
+        // Ignore late responses from old sessions
+        if (!ReferenceEquals(session, currentSession))
         {
-            var media = await session.TryGetMediaPropertiesAsync();
-
-            // Ignore an async response from a session that is no longer
-            // the active session.
-            if (!ReferenceEquals(session, CurrentSession))
-            {
-                DebugLog("Ignoring metadata from an inactive session.");
-
-                return;
-            }
-
-            var title = CleanText(media.Title);
-            var artist = CleanText(media.Artist);
-            var album = CleanText(media.AlbumTitle);
-
-            DebugLog(
-                $"raw metadata: title='{EscapeForLog(media.Title)}' "
-                    + $"artist='{EscapeForLog(media.Artist)}' "
-                    + $"album='{EscapeForLog(media.AlbumTitle)}' "
-                    + $"source='{EscapeForLog(session.SourceAppUserModelId)}'"
-            );
-
-            DebugLog(
-                $"normalized metadata: title='{EscapeForLog(title)}' "
-                    + $"artist='{EscapeForLog(artist)}' "
-                    + $"album='{EscapeForLog(album)}'"
-            );
-
-            if (string.IsNullOrWhiteSpace(title))
-                return;
-
-            if (title == lastTitle && artist == lastArtist && album == lastAlbum)
-            {
-                return;
-            }
-
-            lastTitle = title;
-            lastArtist = artist;
-            lastAlbum = album;
-
-            var playback = session.GetPlaybackInfo();
-            var timeline = session.GetTimelineProperties();
-
-            var state = playback.PlaybackStatus.ToString();
-
-            lastPlaybackState = state;
-
-            output.Write(
-                new MediaEvent
-                {
-                    Event = "mediaChanged",
-                    Player = NormalizePlayer(session.SourceAppUserModelId),
-                    Title = title,
-                    Artist = artist,
-                    Album = album,
-                    State = state,
-                    Position = (long)timeline.Position.TotalMilliseconds,
-                    Duration = (long)timeline.EndTime.TotalMilliseconds,
-                }
-            );
+            return;
         }
-        catch (Exception exception)
+
+        var title = CleanText(media.Title);
+        var artist = CleanText(media.Artist);
+        var album = CleanText(media.AlbumTitle);
+
+        if (string.IsNullOrWhiteSpace(title))
+            return;
+
+        if (title == lastTitle && artist == lastArtist && album == lastAlbum)
         {
-            DebugLog(
-                $"Publishing media failed: " + $"{exception.GetType().Name}: {exception.Message}"
-            );
+            return;
         }
+
+        lastTitle = title;
+        lastArtist = artist;
+        lastAlbum = album;
+
+        var playback = session.GetPlaybackInfo();
+
+        lastPlaybackState = playback.PlaybackStatus.ToString();
+
+        var (position, duration) = GetTimeline(session);
+
+        output.Write(
+            new MediaEvent
+            {
+                Event = "mediaChanged",
+
+                Player = NormalizePlayer(session.SourceAppUserModelId),
+
+                Title = title,
+                Artist = artist,
+                Album = album,
+
+                State = lastPlaybackState,
+
+                Position = position,
+                Duration = duration,
+            }
+        );
     }
 
     private void PublishPlayback(GlobalSystemMediaTransportControlsSession session)
     {
-        try
+        if (!ReferenceEquals(session, currentSession))
         {
-            if (!ReferenceEquals(session, CurrentSession))
-                return;
-
-            var playback = session.GetPlaybackInfo();
-            var state = playback.PlaybackStatus.ToString();
-
-            if (state == "Closed")
-                return;
-
-            if (state == lastPlaybackState)
-                return;
-
-            lastPlaybackState = state;
-
-            var timeline = session.GetTimelineProperties();
-
-            output.Write(
-                new MediaEvent
-                {
-                    Event = "playbackChanged",
-                    State = state,
-                    Position = (long)timeline.Position.TotalMilliseconds,
-                    Duration = (long)timeline.EndTime.TotalMilliseconds,
-                }
-            );
+            return;
         }
-        catch (Exception exception)
-        {
-            DebugLog(
-                $"Publishing playback state failed: "
-                    + $"{exception.GetType().Name}: {exception.Message}"
-            );
-        }
-    }
 
-    private void DebugLog(string message)
-    {
-        if (!debugEnabled)
+        var state = session.GetPlaybackInfo().PlaybackStatus.ToString();
+
+        if (state == "Closed")
             return;
 
-        Console.Error.WriteLine($"[MediaWatcher][session][debug] {message}");
+        if (state == lastPlaybackState)
+            return;
 
-        Console.Error.Flush();
+        lastPlaybackState = state;
+
+        var (position, duration) = GetTimeline(session);
+
+        output.Write(
+            new MediaEvent
+            {
+                Event = "playbackChanged",
+                State = state,
+                Position = position,
+                Duration = duration,
+            }
+        );
     }
 
-    private static string EscapeForLog(string? value)
-    {
-        if (value is null)
-            return "<null>";
+    // ============================================================
+    // Helpers
+    // ============================================================
 
-        return value.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+    private static (long Position, long Duration) GetTimeline(
+        GlobalSystemMediaTransportControlsSession session
+    )
+    {
+        var timeline = session.GetTimelineProperties();
+        return (
+            (long)timeline.Position.TotalMilliseconds,
+            (long)timeline.EndTime.TotalMilliseconds
+        );
     }
 
     private static string CleanText(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
             return "";
-
         return string.Join(
             " ",
             value.Split(Array.Empty<char>(), StringSplitOptions.RemoveEmptyEntries)
@@ -289,5 +274,22 @@ public sealed class MediaSessionWatcher
         }
 
         return player;
+    }
+
+    private void Debug(string message)
+    {
+        if (!debugEnabled)
+            return;
+
+        Console.Error.WriteLine($"[MediaWatcher][session] {message}");
+        Console.Error.Flush();
+    }
+
+    private static string Escape(string? value)
+    {
+        if (value == null)
+            return "<null>";
+
+        return value.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
     }
 }

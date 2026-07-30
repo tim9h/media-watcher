@@ -1,10 +1,8 @@
-namespace MediaWatcher;
+namespace MediaWatcher.Commands;
 
 public sealed class CommandResultEvent
 {
     public string Event { get; init; } = "commandResult";
-
-    public string? Id { get; init; }
 
     public string Command { get; init; } = "";
 

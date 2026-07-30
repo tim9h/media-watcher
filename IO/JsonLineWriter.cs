@@ -1,13 +1,13 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MediaWatcher;
+namespace MediaWatcher.IO;
 
 public sealed class JsonLineWriter
 {
-    private readonly object outputLock = new();
+    private readonly Lock sync = new();
 
-    private readonly JsonSerializerOptions jsonOptions = new()
+    private readonly JsonSerializerOptions options = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -15,10 +15,11 @@ public sealed class JsonLineWriter
 
     public void Write<T>(T value)
     {
-        var json = JsonSerializer.Serialize(value, jsonOptions);
-        lock (outputLock)
+        var json = JsonSerializer.Serialize(value, options);
+
+        lock (sync)
         {
-            Console.Out.WriteLine(json);
+            Console.WriteLine(json);
             Console.Out.Flush();
         }
     }

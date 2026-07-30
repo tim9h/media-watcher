@@ -1,5 +1,8 @@
 using System.Reflection;
-using MediaWatcher;
+using MediaWatcher.Audio;
+using MediaWatcher.Commands;
+using MediaWatcher.IO;
+using MediaWatcher.Session;
 
 if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
 {
@@ -16,13 +19,14 @@ if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
 
 var debugEnabled = args.Contains("--debug", StringComparer.OrdinalIgnoreCase);
 
-var output = new JsonLineWriter();
+var writer = new JsonLineWriter();
 
-var mediaSessionWatcher = new MediaSessionWatcher(output, debugEnabled);
+var sessionWatcher = new MediaSessionWatcher(writer, debugEnabled);
 
-await mediaSessionWatcher.StartAsync();
+await sessionWatcher.StartAsync();
 
-var mediaCommandWatcher = new MediaCommandWatcher(mediaSessionWatcher, output, debugEnabled);
+var audioController = new AudioController(writer);
 
-// Keeps the process alive until Java closes stdin.
-await mediaCommandWatcher.RunAsync();
+var commandWatcher = new MediaCommandWatcher(sessionWatcher, audioController, writer, debugEnabled);
+
+await commandWatcher.RunAsync();
