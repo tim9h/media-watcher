@@ -1,8 +1,8 @@
-using MediaWatcher.Events;
-using MediaWatcher.IO;
+using MediaBridge.Events;
+using MediaBridge.IO;
 using NAudio.CoreAudioApi;
 
-namespace MediaWatcher.Audio;
+namespace MediaBridge.Audio;
 
 public sealed class AudioController
 {

@@ -1,11 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using MediaWatcher.Audio;
-using MediaWatcher.Events;
-using MediaWatcher.IO;
-using MediaWatcher.Session;
+using MediaBridge.Audio;
+using MediaBridge.Events;
+using MediaBridge.IO;
+using MediaBridge.Session;
 
-namespace MediaWatcher.Commands;
+namespace MediaBridge.Commands;
 
 public sealed class MediaCommandWatcher
 {
@@ -140,7 +140,7 @@ public sealed class MediaCommandWatcher
         if (!debugEnabled)
             return;
 
-        Console.Error.WriteLine($"[MediaWatcher][command] {message}");
+        Console.Error.WriteLine($"[MediaBridge][command] {message}");
         Console.Error.Flush();
     }
 }

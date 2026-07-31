@@ -1,4 +1,4 @@
-namespace MediaWatcher.Events;
+namespace MediaBridge.Events;
 
 public sealed class VolumeChangedEvent
 {

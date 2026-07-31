@@ -1,4 +1,4 @@
-namespace MediaWatcher;
+namespace MediaBridge;
 
 public class MediaEvent
 {

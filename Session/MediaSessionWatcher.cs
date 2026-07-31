@@ -1,9 +1,9 @@
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Windows;
-using MediaWatcher.IO;
+using MediaBridge.IO;
 using Windows.Media.Control;
 
-namespace MediaWatcher.Session;
+namespace MediaBridge.Session;
 
 public sealed class MediaSessionWatcher
 {
@@ -281,7 +281,7 @@ public sealed class MediaSessionWatcher
         if (!debugEnabled)
             return;
 
-        Console.Error.WriteLine($"[MediaWatcher][session] {message}");
+        Console.Error.WriteLine($"[MediaBridge][session] {message}");
         Console.Error.Flush();
     }
 

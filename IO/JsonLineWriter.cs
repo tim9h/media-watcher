@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MediaWatcher.IO;
+namespace MediaBridge.IO;
 
 public sealed class JsonLineWriter
 {

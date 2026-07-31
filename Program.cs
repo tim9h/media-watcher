@@ -1,8 +1,8 @@
 using System.Reflection;
-using MediaWatcher.Audio;
-using MediaWatcher.Commands;
-using MediaWatcher.IO;
-using MediaWatcher.Session;
+using MediaBridge.Audio;
+using MediaBridge.Commands;
+using MediaBridge.IO;
+using MediaBridge.Session;
 
 if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
 {
@@ -13,7 +13,7 @@ if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
             ?.InformationalVersion
         ?? "unknown";
 
-    Console.WriteLine($"MediaWatcher {version}");
+    Console.WriteLine($"MediaBridge {version}");
     return;
 }
 

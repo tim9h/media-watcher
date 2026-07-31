@@ -1,6 +1,6 @@
-# Media Watcher
+# MediaBridge
 
-Media Watcher is a lightweight Global System Media Transport Controls (GSMTC) media watcher written in C#. It writes playback and audio events as JSON lines to `stdout` and accepts control commands as JSON lines via `stdin`.
+MediaBridge is a lightweight Global System Media Transport Controls (GSMTC) media watcher written in C#. It writes playback and audio events as JSON lines to `stdout` and accepts control commands as JSON lines via `stdin`.
 
 > Targets Windows 10+ (build 19041 or later) via `net10.0-windows10.0.19041.0`.
 
@@ -16,7 +16,7 @@ Some MP3 players don't support GSMTC out of the box and may require a plugin:
 ## Usage
 
 ```bash
-MediaWatcher.exe
+MediaBridge.exe
 ```
 
 Available command-line options:

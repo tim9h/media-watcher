@@ -1,4 +1,4 @@
-namespace MediaWatcher.Commands;
+namespace MediaBridge.Commands;
 
 public sealed class CommandResultEvent
 {
