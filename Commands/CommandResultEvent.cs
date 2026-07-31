@@ -7,6 +7,4 @@ public sealed class CommandResultEvent
     public string Command { get; init; } = "";
 
     public bool Success { get; init; }
-
-    public string? Error { get; init; }
 }

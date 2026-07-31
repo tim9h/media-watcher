@@ -1,6 +1,6 @@
 # Media Watcher
 
-Media Watcher is a lightweight Global System Media Transport Controls (GSMTC) media watcher written in C#. It writes playback events as JSON lines to `stdout` and accepts control commands as JSON lines via `stdin`.
+Media Watcher is a lightweight Global System Media Transport Controls (GSMTC) media watcher written in C#. It writes playback and audio events as JSON lines to `stdout` and accepts control commands as JSON lines via `stdin`.
 
 > Targets Windows 10+ (build 19041 or later) via `net10.0-windows10.0.19041.0`.
 
@@ -28,7 +28,7 @@ Available command-line options:
 
 ## Output format
 
-The application emits JSON objects for changes. Each event is written as a single JSON line.
+The application emits newline-delimited JSON (NDJSON). Each event is written as a single JSON object on its own line.
 
 Example `mediaChanged` event:
 
@@ -56,6 +56,16 @@ Example `playbackChanged` event:
 }
 ```
 
+Example `volumeChanged` event:
+
+```json
+{
+  "event": "volumeChanged",
+  "volume": 0.42,
+  "muted": false
+}
+```
+
 Example `commandResult` event:
 
 ```json
@@ -68,23 +78,26 @@ Example `commandResult` event:
 
 ## Event fields
 
-* `event` - `mediaChanged`, `playbackChanged` or `commandResult`
-* `player` - normalized player identifier (may be empty for some sessions)
-* `title` - current media title
-* `artist` - current media artist
-* `album` - current media album
-* `state` - playback state, e.g. `Playing`, `Paused`
-* `position` - current playback position in milliseconds (may be `0` if unsupported)
-* `duration` - total duration in milliseconds (may be `0` if unsupported)
-* `command` - executed command (`commandResult` only)
-* `success` - whether the command was accepted (`commandResult` only)
-* `error` - optional error code (`commandResult` only)
+| Field | Description |
+|-------|-------------|
+| `event` | `mediaChanged`, `playbackChanged`, `volumeChanged` or `commandResult` |
+| `player` | Normalized player identifier (`mediaChanged` only) |
+| `title` | Current media title |
+| `artist` | Current media artist |
+| `album` | Current media album |
+| `state` | Playback state (`Playing`, `Paused`, etc.) |
+| `position` | Current playback position in milliseconds (may be `0` if unsupported) |
+| `duration` | Total media duration in milliseconds (may be `0` if unsupported) |
+| `volume` | Master system volume (`0.0` – `1.0`) |
+| `muted` | Whether the default playback device is muted |
+| `command` | Executed command (`commandResult` only) |
+| `success` | Whether the command completed successfully (`commandResult` only) |
 
 ## Input commands
 
 Media Watcher reads one JSON command per line from `stdin`.
 
-Supported commands:
+### Media transport
 
 ```json
 {"command":"play"}
@@ -95,15 +108,31 @@ Supported commands:
 {"command":"stop"}
 ```
 
-Each command produces a `commandResult` event indicating whether the command was accepted by the active media session.
+### System audio
+
+```json
+{"command":"mute"}
+{"command":"unmute"}
+{"command":"toggleMute"}
+{"command":"vol+"}
+{"command":"vol-"}
+{"command":"setVolume","value":0.5}
+```
+
+`setVolume` expects a floating-point value between `0.0` (0%) and `1.0` (100%).
+
+Every command produces a `commandResult` event indicating whether it completed successfully.
+
+Volume changes additionally emit a `volumeChanged` event. These events are generated for both commands and external system volume changes (for example, keyboard media keys or the Windows volume mixer).
 
 ## Notes
 
 * `mediaChanged` is emitted when the current session media metadata changes.
 * `playbackChanged` is emitted when playback state changes.
+* `volumeChanged` is emitted whenever the system master volume or mute state changes.
 * `commandResult` is emitted after a command received on `stdin` has been processed.
 * Debug logging is written to `stderr` when `--debug` is enabled.
-* The output is JSON-serialized with camelCase property names.
+* JSON output uses camelCase property names.
 
 ## Building
 

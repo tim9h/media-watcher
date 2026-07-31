@@ -7,6 +7,7 @@ namespace MediaWatcher.Audio;
 public sealed class AudioController
 {
     private readonly MMDevice device;
+    
     private readonly JsonLineWriter output;
 
     private const float VolumeStep = 0.05f;
@@ -38,6 +39,7 @@ public sealed class AudioController
         PublishState();
         return Task.FromResult(true);
     }
+
     public Task<bool> VolumeUpAsync()
     {
         var current = device.AudioEndpointVolume.MasterVolumeLevelScalar;
@@ -50,6 +52,7 @@ public sealed class AudioController
         PublishState();
         return Task.FromResult(true);
     }
+
     public Task<bool> VolumeDownAsync()
     {
         var current = device.AudioEndpointVolume.MasterVolumeLevelScalar;
@@ -62,6 +65,15 @@ public sealed class AudioController
         PublishState();
         return Task.FromResult(true);
     }
+
+    public Task<bool> SetVolumeAsync(float volume)
+    {
+        volume = Math.Clamp(volume, 0f, 1f);
+        device.AudioEndpointVolume.MasterVolumeLevelScalar = volume;
+        PublishState();
+        return Task.FromResult(true);
+    }
+
     private void PublishState()
     {
         output.Write(

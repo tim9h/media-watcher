@@ -29,4 +29,4 @@ var audioController = new AudioController(writer);
 
 var commandWatcher = new MediaCommandWatcher(sessionWatcher, audioController, writer, debugEnabled);
 
-await commandWatcher.RunAsync();
+await commandWatcher.StartAsync();

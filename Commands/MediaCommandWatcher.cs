@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using MediaWatcher.Audio;
+using MediaWatcher.Events;
 using MediaWatcher.IO;
 using MediaWatcher.Session;
 
@@ -7,15 +9,18 @@ namespace MediaWatcher.Commands;
 
 public sealed class MediaCommandWatcher
 {
-    private readonly AudioController audioController;
-    private readonly JsonLineWriter output;
     private readonly bool debugEnabled;
+
+    private readonly JsonLineWriter output;
 
     private readonly Dictionary<string, Func<Task<bool>>> handlers;
 
+    private readonly Dictionary<string, Func<float, Task<bool>>> valueHandlers;
+
     private readonly JsonSerializerOptions jsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     public MediaCommandWatcher(
@@ -25,7 +30,6 @@ public sealed class MediaCommandWatcher
         bool debugEnabled = false
     )
     {
-        this.audioController = audioController;
         this.output = output;
         this.debugEnabled = debugEnabled;
 
@@ -47,90 +51,91 @@ public sealed class MediaCommandWatcher
             ["vol+"] = audioController.VolumeUpAsync,
             ["vol-"] = audioController.VolumeDownAsync,
         };
+
+        valueHandlers = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["setvolume"] = audioController.SetVolumeAsync,
+        };
     }
 
-    public async Task RunAsync()
+    public async Task StartAsync()
     {
-        Debug("Command listener started.");
-
-        while (true)
+        while (await Console.In.ReadLineAsync() is string line)
         {
-            string? line;
-
-            try
-            {
-                line = await Console.In.ReadLineAsync();
-            }
-            catch (Exception ex)
-            {
-                Debug($"stdin error: {ex.Message}");
-                return;
-            }
-
-            if (line == null)
-            {
-                Debug("stdin closed.");
-                return;
-            }
-
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
-            await ProcessLineAsync(line);
+            DebugLog($"stdin: {line}");
+
+            MediaCommand? command;
+
+            try
+            {
+                command = JsonSerializer.Deserialize<MediaCommand>(line, jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                DebugLog($"Invalid JSON: {ex.Message}");
+                WriteResult("", false);
+                continue;
+            }
+
+            if (command == null || string.IsNullOrWhiteSpace(command.Command))
+            {
+                DebugLog("Missing command.");
+                WriteResult(command?.Command ?? "", false);
+                continue;
+            }
+
+            DebugLog($"Command='{command.Command}', Value={command.Value?.ToString() ?? "<null>"}");
+            var success = await ExecuteAsync(command);
+            WriteResult(command.Command, success);
         }
     }
 
-    private async Task ProcessLineAsync(string line)
+    private async Task<bool> ExecuteAsync(MediaCommand command)
     {
-        MediaCommand? command;
+        var name = command.Command?.Trim() ?? string.Empty;
 
         try
         {
-            command = JsonSerializer.Deserialize<MediaCommand>(line, jsonOptions);
-        }
-        catch
-        {
-            WriteResult("", false, "invalidJson");
-            return;
-        }
+            if (handlers.TryGetValue(name, out var handler))
+            {
+                DebugLog($"Executing '{name}'.");
+                var result = await handler();
+                DebugLog($"'{name}' returned {result}.");
+                return result;
+            }
 
-        if (command == null || string.IsNullOrWhiteSpace(command.Command))
-        {
-            WriteResult("", false, "missingCommand");
-            return;
-        }
+            if (valueHandlers.TryGetValue(name, out var valueHandler))
+            {
+                if (!command.Value.HasValue)
+                {
+                    DebugLog($"'{name}' requires a value.");
+                    return false;
+                }
 
-        if (!handlers.TryGetValue(command.Command, out var handler))
-        {
-            WriteResult(command.Command, false, "unknownCommand");
-            return;
-        }
-
-        try
-        {
-            bool success = await handler();
-            WriteResult(command.Command, success, success ? null : "commandRejected");
+                DebugLog($"Executing '{name}' ({command.Value.Value}).");
+                var result = await valueHandler(command.Value.Value);
+                DebugLog($"'{name}' returned {result}.");
+                return result;
+            }
+            DebugLog($"Unknown command '{name}'.");
         }
         catch (Exception ex)
         {
-            Debug(ex.ToString());
-            WriteResult(command.Command, false, "commandFailed");
+            DebugLog($"Exception while executing '{name}': {ex}");
         }
+
+        return false;
     }
 
-    private void WriteResult(string command, bool success, string? error)
+    private void WriteResult(string command, bool success)
     {
-        output.Write(
-            new CommandResultEvent
-            {
-                Command = command,
-                Success = success,
-                Error = error,
-            }
-        );
+        output.Write(new CommandResultEvent { Command = command, Success = success });
     }
 
-    private void Debug(string message)
+    private void DebugLog(string message)
     {
         if (!debugEnabled)
             return;
