@@ -13,6 +13,8 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
     - uses: actions/checkout@v7
@@ -26,3 +28,15 @@ jobs:
       run: dotnet build --no-restore -p:EnableWindowsTargeting=true
     - name: Test
       run: dotnet test --no-build --verbosity normal -p:EnableWindowsTargeting=true
+    - name: Publish
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -p:EnableWindowsTargeting=true
+    - name: Create GitHub release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: build-${{ github.run_number }}
+        name: MediaBridge build ${{ github.run_number }}
+        generate_release_notes: true
+        files: bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/MediaBridge.exe
+        fail_on_unmatched_files: true
