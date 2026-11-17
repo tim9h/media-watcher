@@ -33,7 +33,7 @@ jobs:
       run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -p:EnableWindowsTargeting=true
     - name: Create GitHub release
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         tag_name: build-${{ github.run_number }}
         name: MediaBridge build ${{ github.run_number }}
